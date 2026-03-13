@@ -1,15 +1,32 @@
 # Realtime Lakehouse Mini Platform (CDC + Streaming + Iceberg)
 
-PostgreSQL OLTP 변경 데이터(CDC)와 애플리케이션 행동 이벤트를 Kafka로 표준화하고, Flink로 정제/집계한 뒤 Iceberg 레이크하우스에 적재해 Trino, Superset, Great Expectations까지 한 번에 데모할 수 있도록 만든 로컬 재현형 미니 플랫폼입니다.
+PostgreSQL OLTP 변경 데이터와 애플리케이션 이벤트를 Kafka로 표준화하고, Flink 스트리밍 처리로 Iceberg 레이크하우스에 적재한 뒤 Trino, Superset, Great Expectations까지 연결한 로컬 재현형 end-to-end 데이터 플랫폼입니다.
 
-## What You Can Demo
+이 프로젝트는 "CDC", "Kafka topic 설계", "Schema Registry", "Exactly-once", "Iceberg Lakehouse", "Medallion", "DQ", "대시보드 데모"를 한 번에 설명할 수 있도록 포트폴리오와 면접을 목표로 설계했습니다.
 
-- PostgreSQL `orders / payments / refunds` 변경이 Debezium CDC로 Kafka 토픽에 반영
-- 애플리케이션 이벤트(`click / search / add_to_cart`)가 Schema Registry 기반 Avro로 Kafka에 적재
-- Flink SQL이 bronze / silver / gold Iceberg 테이블을 스트리밍 갱신
-- Trino로 KPI 조회와 Iceberg snapshot / time travel 확인
-- Superset에서 KPI 차트 구성
-- Great Expectations로 Data Docs 생성
+## Why This Project
+
+- Postgres CDC와 앱 이벤트 스트리밍을 하나의 플랫폼으로 통합했습니다.
+- Kafka, Flink, Iceberg, Trino, Superset, Great Expectations까지 실제 운영에 가까운 흐름을 로컬에서 재현할 수 있습니다.
+- 단순 적재가 아니라 bronze / silver / gold, 스키마 진화, 장애 복구, 타임 트래블, 데이터 품질 검증까지 설명할 수 있습니다.
+- 로컬 MinIO + Iceberg REST Catalog 기반이지만, S3 + Glue + Athena 구조로 자연스럽게 확장할 수 있도록 설계했습니다.
+
+## What Is Working
+
+- PostgreSQL `orders / payments / refunds` 변경이 Debezium CDC로 Kafka 토픽에 반영됩니다.
+- 앱 이벤트는 Schema Registry 기반 Avro로 Kafka에 적재됩니다.
+- Flink SQL이 Kafka를 읽어 Iceberg bronze / silver / gold 테이블을 스트리밍 갱신합니다.
+- Trino에서 Iceberg 테이블 조회와 KPI 확인이 가능합니다.
+- Great Expectations로 `gold.commerce_kpis_1m` 검증과 Data Docs 생성을 수행합니다.
+- Flink 체크포인트가 반복적으로 성공하며 잡이 안정적으로 RUNNING 상태를 유지합니다.
+
+검증 예시:
+
+- `bronze.orders_cdc = 35`
+- `bronze.payments_cdc = 18`
+- `bronze.refunds_cdc = 9`
+- `silver.order_events = 62`
+- `gold.commerce_kpis_1m = 32`
 
 ## Architecture
 
@@ -52,7 +69,27 @@ flowchart LR
     GX --> TRINO
 ```
 
-더 자세한 설계는 [docs/architecture.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/architecture.md), [docs/topic-and-schema-design.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/topic-and-schema-design.md), [docs/operations.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/operations.md)에 정리했습니다.
+상세 설계 문서:
+
+- [docs/architecture.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/architecture.md)
+- [docs/topic-and-schema-design.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/topic-and-schema-design.md)
+- [docs/operations.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/operations.md)
+- [docs/performance.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/performance.md)
+- [docs/demo-script.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/demo-script.md)
+- [docs/portfolio-playbook.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/portfolio-playbook.md)
+
+## Stack
+
+- Source OLTP: PostgreSQL 16
+- CDC: Debezium PostgreSQL Connector + Kafka Connect
+- Event Bus: Kafka
+- Schema Management: Confluent-compatible Schema Registry
+- Stream Processing: Apache Flink 1.20 SQL
+- Lakehouse Table Format: Apache Iceberg
+- Object Storage: MinIO
+- Query Engine: Trino
+- Dashboard: Apache Superset
+- Data Quality: Great Expectations
 
 ## Quick Start
 
@@ -64,7 +101,7 @@ Copy-Item .env.example .env
 .\scripts\run-dq.ps1
 ```
 
-부팅이 끝나면 아래 엔드포인트를 확인할 수 있습니다.
+주요 접속 포인트:
 
 - Kafka Connect: [http://localhost:8083](http://localhost:8083)
 - Schema Registry: [http://localhost:8081](http://localhost:8081)
@@ -80,22 +117,56 @@ Copy-Item .env.example .env
 3. `.\scripts\produce-events.ps1`
 4. Trino에서 [sql/trino/01_demo_queries.sql](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/sql/trino/01_demo_queries.sql) 실행
 5. `.\scripts\run-dq.ps1`
+6. Superset에서 KPI 차트 확인
 
-## Core Topics
+짧은 발표용 흐름은 [docs/demo-script.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/demo-script.md)에 정리했습니다.
+
+## Core Topics And Design Choices
+
+주요 Kafka 토픽:
 
 - `raw.cdc.commerce.public.orders`
 - `raw.cdc.commerce.public.payments`
 - `raw.cdc.commerce.public.refunds`
 - `raw.event.commerce.user_behavior_v3`
 
-## Schema Evolution Demo
+핵심 설계 선택:
 
-대표 시나리오는 `orders.coupon_id` nullable 필드 추가입니다. Schema Registry 글로벌 호환성 정책은 `BACKWARD_TRANSITIVE`로 설정하고, Iceberg는 nullable add-column 중심으로 진화시키도록 설계했습니다.
+- CDC는 Debezium unwrap JSON으로 단순화해 Flink SQL 소비를 쉽게 했습니다.
+- 앱 이벤트는 Avro + Schema Registry로 타입 안전성과 진화를 확보했습니다.
+- 저장 계층은 Iceberg 단일 포맷으로 통일해 배치와 스트리밍을 같은 테이블로 수렴시켰습니다.
+- silver는 정규화된 이벤트 뷰, gold는 1분 KPI 집계 테이블로 구성했습니다.
+- 스키마 호환성은 `BACKWARD_TRANSITIVE` 기준으로 설명 가능하도록 설계했습니다.
+
+## Submission Checklist
+
+- `docker compose`로 전체 스택 기동 가능
+- Debezium 커넥터 자동 등록 가능
+- Flink SQL 잡 배포 가능
+- Iceberg bronze / silver / gold 적재 확인
+- Trino 조회 및 time-travel 예시 제공
+- Great Expectations Data Docs 생성 가능
+- 면접용 기술 설명 및 장애 해결 문서화 완료
+
+## Interview Talking Points
+
+이 프로젝트로 다음 주제를 자연스럽게 설명할 수 있습니다.
+
+- CDC와 이벤트 스트리밍을 하나의 레이크하우스 파이프라인으로 통합한 이유
+- Kafka topic / key / schema / compatibility 설계 기준
+- Flink exactly-once와 checkpoint 복구 관점
+- Iceberg 메타데이터 커밋, snapshot, time travel 설명
+- 동일 Iceberg 테이블에 대한 동시 sink 경합과 해결 방식
+- watermark / idle source 때문에 윈도우가 닫히지 않는 문제와 대응
+- Great Expectations를 통한 데이터 품질 자동 검증
+
+면접용 상세 설명은 [docs/portfolio-playbook.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/portfolio-playbook.md)에 정리했습니다.
 
 ## Verification Checklist
 
 - `docker compose config` 성공
-- Kafka Connect에 `pg-commerce-cdc` 커넥터가 등록됨
-- Flink UI에 `commerce_medallion_pipeline` 잡이 보임
-- Trino에서 `SHOW TABLES FROM bronze` / `SHOW TABLES FROM gold` 성공
+- Kafka Connect에 `pg-commerce-cdc` 커넥터 등록 확인
+- Flink UI에서 `commerce_medallion_pipeline` 확인
+- Trino에서 `SHOW TABLES FROM iceberg.bronze` / `SHOW TABLES FROM iceberg.gold` 성공
 - `quality/great_expectations/uncommitted/data_docs/local_site/index.html` 생성
+
