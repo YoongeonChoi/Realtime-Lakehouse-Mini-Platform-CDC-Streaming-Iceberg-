@@ -2,6 +2,7 @@ SET 'pipeline.name' = 'commerce_medallion_pipeline';
 SET 'execution.runtime-mode' = 'streaming';
 SET 'execution.checkpointing.interval' = '30 s';
 SET 'execution.checkpointing.mode' = 'EXACTLY_ONCE';
+SET 'table.exec.source.idle-timeout' = '10 s';
 SET 'table.local-time-zone' = 'Asia/Seoul';
 
 CREATE CATALOG lakehouse WITH (
@@ -274,16 +275,45 @@ SELECT refund_id, order_id, payment_id, user_id, refund_status, refund_reason, r
 FROM refunds_cdc_source;
 
 INSERT INTO silver.order_events
-SELECT CAST(order_id AS STRING), user_id, 'order', order_status, total_amount, event_time, 'postgres_cdc', CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3))
-FROM orders_cdc_source;
+SELECT event_id, user_id, entity_type, event_status, amount, event_time, source_system, ingest_time
+FROM (
+  SELECT
+    CAST(order_id AS STRING) AS event_id,
+    user_id,
+    'order' AS entity_type,
+    order_status AS event_status,
+    total_amount AS amount,
+    event_time,
+    'postgres_cdc' AS source_system,
+    CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3)) AS ingest_time
+  FROM orders_cdc_source
 
-INSERT INTO silver.order_events
-SELECT CAST(payment_id AS STRING), user_id, 'payment', payment_status, amount, event_time, 'postgres_cdc', CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3))
-FROM payments_cdc_source;
+  UNION ALL
 
-INSERT INTO silver.order_events
-SELECT CAST(refund_id AS STRING), user_id, 'refund', refund_status, refund_amount, event_time, 'postgres_cdc', CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3))
-FROM refunds_cdc_source;
+  SELECT
+    CAST(payment_id AS STRING) AS event_id,
+    user_id,
+    'payment' AS entity_type,
+    payment_status AS event_status,
+    amount,
+    event_time,
+    'postgres_cdc' AS source_system,
+    CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3)) AS ingest_time
+  FROM payments_cdc_source
+
+  UNION ALL
+
+  SELECT
+    CAST(refund_id AS STRING) AS event_id,
+    user_id,
+    'refund' AS entity_type,
+    refund_status AS event_status,
+    refund_amount AS amount,
+    event_time,
+    'postgres_cdc' AS source_system,
+    CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3)) AS ingest_time
+  FROM refunds_cdc_source
+);
 
 INSERT INTO gold.commerce_kpis_1m
 SELECT window_start, window_end, metric_name, metric_value, CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3))

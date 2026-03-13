@@ -156,6 +156,7 @@ services:
       JOB_MANAGER_RPC_ADDRESS: jobmanager
       AWS_REGION: us-east-1
       AWS_DEFAULT_REGION: us-east-1
+      JAVA_TOOL_OPTIONS: --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
     hostname: jobmanager
     ports:
       - "8082:8081"
@@ -174,6 +175,7 @@ services:
       JOB_MANAGER_RPC_ADDRESS: jobmanager
       AWS_REGION: us-east-1
       AWS_DEFAULT_REGION: us-east-1
+      JAVA_TOOL_OPTIONS: --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
     volumes:
       - flink_state:/opt/flink/state
 
