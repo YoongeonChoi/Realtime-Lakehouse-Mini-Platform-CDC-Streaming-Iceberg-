@@ -110,6 +110,62 @@ Copy-Item .env.example .env
 - Superset: [http://localhost:8088](http://localhost:8088)
 - MinIO Console: [http://localhost:9001](http://localhost:9001)
 
+## Default Accounts
+
+기본 인증 정보:
+
+- PostgreSQL
+  - Host: `localhost`
+  - Port: `5432`
+  - DB: `commerce`
+  - User: `postgres`
+  - Password: `postgres`
+- Superset
+  - URL: [http://localhost:8088](http://localhost:8088)
+  - User: `admin`
+  - Password: `admin`
+- MinIO Console
+  - URL: [http://localhost:9001](http://localhost:9001)
+  - User: `minio`
+  - Password: `minio12345`
+
+인증이 없는 엔드포인트:
+
+- Kafka Connect: [http://localhost:8083](http://localhost:8083)
+- Schema Registry: [http://localhost:8081](http://localhost:8081)
+- Flink UI: [http://localhost:8082](http://localhost:8082)
+- Trino UI: [http://localhost:8080](http://localhost:8080)
+- Iceberg REST Catalog: [http://localhost:8181](http://localhost:8181)
+
+## Component Guide
+
+각 서비스의 역할:
+
+- `postgres`
+  - 주문, 결제, 환불 데이터를 저장하는 원천 OLTP 데이터베이스입니다.
+- `connect`
+  - Debezium PostgreSQL Connector를 실행하며 Postgres WAL 변경을 Kafka CDC 토픽으로 보냅니다.
+- `kafka`
+  - CDC 이벤트와 애플리케이션 이벤트를 전달하는 이벤트 버스입니다.
+- `schema-registry`
+  - Avro 스키마를 등록하고 호환성 정책을 관리합니다.
+- `event-producer`
+  - 클릭, 검색, 장바구니 같은 행동 이벤트를 Kafka로 발행하는 데모용 producer입니다.
+- `flink-jobmanager`
+  - Flink 잡 스케줄링과 체크포인트 조율을 담당합니다.
+- `flink-taskmanager`
+  - Kafka source를 읽고 Iceberg 테이블에 실제 스트리밍 처리를 수행합니다.
+- `minio`
+  - Iceberg 데이터 파일과 메타데이터가 저장되는 S3 호환 오브젝트 스토리지입니다.
+- `iceberg-rest`
+  - Flink와 Trino가 같은 Iceberg 테이블을 공유할 수 있게 해주는 REST catalog입니다.
+- `trino`
+  - Iceberg bronze / silver / gold 테이블을 SQL로 조회하는 쿼리 엔진입니다.
+- `superset`
+  - Trino를 데이터 소스로 사용해 KPI 대시보드를 시각화합니다.
+- `dq`
+  - Great Expectations를 실행해 gold 테이블 품질 검증과 Data Docs 생성을 수행합니다.
+
 ## Demo Flow
 
 1. `.\scripts\bootstrap.ps1`
@@ -120,6 +176,63 @@ Copy-Item .env.example .env
 6. Superset에서 KPI 차트 확인
 
 짧은 발표용 흐름은 [docs/demo-script.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/demo-script.md)에 정리했습니다.
+
+## Test Checklist
+
+처음부터 끝까지 확인하려면 아래 순서로 테스트하면 됩니다.
+
+### 1. Stack Boot
+
+- `Copy-Item .env.example .env`
+- `.\scripts\bootstrap.ps1`
+- 확인:
+  - [http://localhost:8083](http://localhost:8083) 접속 가능
+  - [http://localhost:8082](http://localhost:8082) 접속 가능
+  - [http://localhost:8088](http://localhost:8088) 접속 가능
+  - [http://localhost:9001](http://localhost:9001) 접속 가능
+
+### 2. CDC Input Test
+
+- `.\scripts\seed-postgres.ps1`
+- 확인:
+  - Flink UI에서 `commerce_medallion_pipeline`가 `RUNNING`
+  - Kafka Connect에서 `pg-commerce-cdc` 커넥터 상태가 `RUNNING`
+
+### 3. App Event Test
+
+- `.\scripts\produce-events.ps1 -Count 120 -IntervalMs 250`
+- 확인:
+  - Schema Registry에 user behavior schema 등록
+  - Kafka 토픽 `raw.event.commerce.user_behavior_v3` 사용 확인
+
+### 4. Lakehouse Query Test
+
+- [sql/trino/01_demo_queries.sql](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/sql/trino/01_demo_queries.sql) 실행
+- 또는 바로 row count 확인:
+
+```powershell
+docker compose exec -T trino trino --execute "SELECT 'bronze.orders_cdc', COUNT(*) FROM iceberg.bronze.orders_cdc UNION ALL SELECT 'bronze.payments_cdc', COUNT(*) FROM iceberg.bronze.payments_cdc UNION ALL SELECT 'bronze.refunds_cdc', COUNT(*) FROM iceberg.bronze.refunds_cdc UNION ALL SELECT 'silver.order_events', COUNT(*) FROM iceberg.silver.order_events UNION ALL SELECT 'gold.commerce_kpis_1m', COUNT(*) FROM iceberg.gold.commerce_kpis_1m"
+```
+
+기대 결과:
+
+- bronze / silver / gold 테이블 row count가 0보다 큼
+- `gold.commerce_kpis_1m`에서 `orders_created`, `gross_order_value`, `payments_succeeded`, `refund_amount` 확인 가능
+
+### 5. Data Quality Test
+
+- `.\scripts\run-dq.ps1`
+- 확인:
+  - [quality/great_expectations/uncommitted/data_docs/local_site/index.html](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/quality/great_expectations/uncommitted/data_docs/local_site/index.html) 생성
+
+### 6. Troubleshooting Quick Checks
+
+- Flink 로그:
+  - `docker compose logs flink-jobmanager --tail=200`
+- Kafka Connect 로그:
+  - `docker compose logs connect --tail=200`
+- 전체 상태:
+  - `docker compose ps`
 
 ## Core Topics And Design Choices
 
@@ -169,4 +282,3 @@ Copy-Item .env.example .env
 - Flink UI에서 `commerce_medallion_pipeline` 확인
 - Trino에서 `SHOW TABLES FROM iceberg.bronze` / `SHOW TABLES FROM iceberg.gold` 성공
 - `quality/great_expectations/uncommitted/data_docs/local_site/index.html` 생성
-
