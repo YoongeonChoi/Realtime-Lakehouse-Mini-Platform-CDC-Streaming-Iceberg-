@@ -1,0 +1,12 @@
+.env
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.tmp
+superset_home/
+quality/great_expectations/uncommitted/
+docker-data/
