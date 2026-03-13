@@ -1,0 +1,2 @@
+confluent-kafka[avro]==2.6.1
+faker==33.3.1

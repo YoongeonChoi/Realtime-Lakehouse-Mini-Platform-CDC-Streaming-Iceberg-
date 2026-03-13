@@ -1,0 +1,21 @@
+{
+  "type": "record",
+  "name": "UserBehaviorEvent",
+  "namespace": "demo.commerce",
+  "fields": [
+    { "name": "event_id", "type": "string" },
+    { "name": "user_id", "type": "long" },
+    { "name": "session_id", "type": "string" },
+    { "name": "event_type", "type": "string" },
+    { "name": "page", "type": "string" },
+    { "name": "product_id", "type": ["null", "long"], "default": null },
+    { "name": "keyword", "type": ["null", "string"], "default": null },
+    { "name": "cart_id", "type": ["null", "string"], "default": null },
+    { "name": "order_id", "type": ["null", "long"], "default": null },
+    { "name": "quantity", "type": ["null", "int"], "default": null },
+    { "name": "price", "type": ["null", "double"], "default": null },
+    { "name": "device_type", "type": "string" },
+    { "name": "source", "type": "string" },
+    { "name": "event_time", "type": "long" }
+  ]
+}
