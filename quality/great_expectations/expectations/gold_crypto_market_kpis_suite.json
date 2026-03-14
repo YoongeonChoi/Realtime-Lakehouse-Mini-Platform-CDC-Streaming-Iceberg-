@@ -1,6 +1,6 @@
 {
   "data_asset_type": null,
-  "expectation_suite_name": "gold_commerce_kpis_suite",
+  "expectation_suite_name": "gold_crypto_market_kpis_suite",
   "expectations": [
     {
       "expectation_type": "expect_table_row_count_to_be_between",

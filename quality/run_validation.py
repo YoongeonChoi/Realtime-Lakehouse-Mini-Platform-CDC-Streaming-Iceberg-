@@ -44,6 +44,7 @@ stores:
     class_name: EvaluationParameterStore
 expectations_store_name: expectations_store
 validations_store_name: validations_store
+evaluation_parameter_store_name: evaluation_parameter_store
 checkpoint_store_name: checkpoint_store
 data_docs_sites:
   local_site:
@@ -75,7 +76,6 @@ def main() -> None:
     context = ensure_context()
     connection_string = os.getenv("TRINO_SQLALCHEMY_URL", "trino://trino@trino:8080/iceberg")
     datasource_name = "trino_lakehouse"
-    suite_name = "gold_commerce_kpis_suite"
 
     context.add_or_update_datasource(
         name=datasource_name,
@@ -92,48 +92,78 @@ def main() -> None:
         },
     )
 
-    try:
-        context.get_expectation_suite(expectation_suite_name=suite_name)
-    except Exception:
-        context.add_expectation_suite(expectation_suite_name=suite_name)
-
-    batch_request = RuntimeBatchRequest(
-        datasource_name=datasource_name,
-        data_connector_name="default_runtime_data_connector_name",
-        data_asset_name="gold_commerce_kpis_1m",
-        runtime_parameters={
+    validation_specs = [
+        {
+            "suite_name": "gold_commerce_kpis_suite",
+            "asset_name": "gold_commerce_kpis_1m",
             "query": """
                 SELECT *
                 FROM gold.commerce_kpis_1m
                 WHERE window_start >= current_timestamp - INTERVAL '1' DAY
-            """
+                  AND window_start IS NOT NULL
+                  AND metric_name IN ('orders_created', 'gross_order_value', 'payments_succeeded', 'refund_amount')
+                  AND metric_value >= 0
+            """,
+            "configure": lambda validator: validator.expect_table_row_count_to_be_between(
+                min_value=1
+            ),
         },
-        batch_identifiers={"run_id": "latest"},
-    )
+        {
+            "suite_name": "gold_crypto_market_kpis_suite",
+            "asset_name": "gold_crypto_market_kpis_1m",
+            "query": """
+                SELECT *
+                FROM gold.crypto_market_kpis_1m
+                WHERE window_start >= current_timestamp - INTERVAL '1' DAY
+                  AND window_start IS NOT NULL
+                  AND symbol IS NOT NULL
+                  AND metric_name IN (
+                    'tick_count_1m',
+                    'traded_volume_1m',
+                    'traded_notional_1m',
+                    'vwap_1m',
+                    'price_volatility_1m'
+                  )
+                  AND metric_value >= 0
+            """,
+            "configure": lambda validator: validator.expect_table_row_count_to_be_between(
+                min_value=1
+            ),
+        },
+    ]
 
-    validator = context.get_validator(
-        batch_request=batch_request,
-        expectation_suite_name=suite_name,
-    )
-    validator.expect_table_row_count_to_be_between(min_value=1)
-    validator.expect_column_values_to_not_be_null("window_start")
-    validator.expect_column_values_to_not_be_null("metric_name")
-    validator.expect_column_values_to_be_in_set(
-        "metric_name",
-        ["orders_created", "gross_order_value", "payments_succeeded", "refund_amount"],
-    )
-    validator.expect_column_values_to_be_between("metric_value", min_value=0)
-    validator.save_expectation_suite(discard_failed_expectations=False)
+    validations = []
+    for spec in validation_specs:
+        try:
+            context.get_expectation_suite(expectation_suite_name=spec["suite_name"])
+        except Exception:
+            context.add_expectation_suite(expectation_suite_name=spec["suite_name"])
 
-    checkpoint = SimpleCheckpoint(
-        name="gold_commerce_kpis_checkpoint",
-        data_context=context,
-        validations=[
+        batch_request = RuntimeBatchRequest(
+            datasource_name=datasource_name,
+            data_connector_name="default_runtime_data_connector_name",
+            data_asset_name=spec["asset_name"],
+            runtime_parameters={"query": spec["query"]},
+            batch_identifiers={"run_id": "latest"},
+        )
+
+        validator = context.get_validator(
+            batch_request=batch_request,
+            expectation_suite_name=spec["suite_name"],
+        )
+        spec["configure"](validator)
+        validator.save_expectation_suite(discard_failed_expectations=False)
+        validations.append(
             {
                 "batch_request": batch_request,
-                "expectation_suite_name": suite_name,
+                "expectation_suite_name": spec["suite_name"],
             }
-        ],
+        )
+
+    checkpoint = SimpleCheckpoint(
+        name="lakehouse_gold_checkpoint",
+        data_context=context,
+        validations=validations,
     )
 
     results = checkpoint.run()

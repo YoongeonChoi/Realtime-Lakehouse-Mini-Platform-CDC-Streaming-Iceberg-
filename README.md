@@ -1,12 +1,12 @@
 # Realtime Lakehouse Mini Platform (CDC + Streaming + Iceberg)
 
-PostgreSQL OLTP 변경 데이터와 애플리케이션 이벤트를 Kafka로 표준화하고, Flink 스트리밍 처리로 Iceberg 레이크하우스에 적재한 뒤 Trino, Superset, Great Expectations까지 연결한 로컬 재현형 end-to-end 데이터 플랫폼입니다.
+PostgreSQL OLTP 변경 데이터, 애플리케이션 이벤트, 그리고 crypto tick market data를 Kafka로 표준화하고, Flink 스트리밍 처리로 Iceberg 레이크하우스에 적재한 뒤 Trino, Superset, Great Expectations까지 연결한 로컬 재현형 end-to-end 데이터 플랫폼입니다.
 
 이 프로젝트는 "CDC", "Kafka topic 설계", "Schema Registry", "Exactly-once", "Iceberg Lakehouse", "Medallion", "DQ", "대시보드 데모"를 한 번에 설명할 수 있도록 포트폴리오와 면접을 목표로 설계했습니다.
 
 ## Why This Project
 
-- Postgres CDC와 앱 이벤트 스트리밍을 하나의 플랫폼으로 통합했습니다.
+- Postgres CDC, 앱 이벤트, market tick stream을 하나의 플랫폼으로 통합했습니다.
 - Kafka, Flink, Iceberg, Trino, Superset, Great Expectations까지 실제 운영에 가까운 흐름을 로컬에서 재현할 수 있습니다.
 - 단순 적재가 아니라 bronze / silver / gold, 스키마 진화, 장애 복구, 타임 트래블, 데이터 품질 검증까지 설명할 수 있습니다.
 - 로컬 MinIO + Iceberg REST Catalog 기반이지만, S3 + Glue + Athena 구조로 자연스럽게 확장할 수 있도록 설계했습니다.
@@ -14,7 +14,7 @@ PostgreSQL OLTP 변경 데이터와 애플리케이션 이벤트를 Kafka로 표
 ## What Is Working
 
 - PostgreSQL `orders / payments / refunds` 변경이 Debezium CDC로 Kafka 토픽에 반영됩니다.
-- 앱 이벤트는 Schema Registry 기반 Avro로 Kafka에 적재됩니다.
+- 앱 이벤트와 crypto tick stream은 Schema Registry 기반 Avro로 Kafka에 적재됩니다.
 - Flink SQL이 Kafka를 읽어 Iceberg bronze / silver / gold 테이블을 스트리밍 갱신합니다.
 - Trino에서 Iceberg 테이블 조회와 KPI 확인이 가능합니다.
 - Great Expectations로 `gold.commerce_kpis_1m` 검증과 Data Docs 생성을 수행합니다.
@@ -27,6 +27,9 @@ PostgreSQL OLTP 변경 데이터와 애플리케이션 이벤트를 Kafka로 표
 - `bronze.refunds_cdc = 9`
 - `silver.order_events = 62`
 - `gold.commerce_kpis_1m = 32`
+- `bronze.crypto_ticks = 800`
+- `silver.crypto_ticks_1s = 529`
+- `gold.crypto_market_kpis_1m = 60`
 
 ## Architecture
 
@@ -35,6 +38,7 @@ flowchart LR
     subgraph Sources
         PG[(PostgreSQL)]
         APP[Event Producer]
+        MKT[Crypto Tick Producer]
     end
 
     subgraph Streaming
@@ -58,7 +62,9 @@ flowchart LR
 
     PG --> DBZ --> KAFKA
     APP --> KAFKA
+    MKT --> KAFKA
     SR --> APP
+    SR --> MKT
     KAFKA --> FLINK
     FLINK --> REST
     REST --> ICE
@@ -83,10 +89,11 @@ flowchart LR
 1. PostgreSQL `orders / payments / refunds` 변경이 WAL에 기록됩니다.
 2. Debezium PostgreSQL Connector가 변경 로그를 읽어 Kafka CDC 토픽으로 발행합니다.
 3. 앱 이벤트 producer가 클릭/검색/장바구니 이벤트를 Kafka에 Avro 형태로 적재합니다.
-4. Flink SQL이 Kafka source를 읽어 bronze / silver / gold Iceberg 테이블로 스트리밍 적재합니다.
-5. Trino가 Iceberg 테이블을 SQL로 조회합니다.
-6. Superset은 Trino를 통해 KPI 대시보드를 구성합니다.
-7. Great Expectations는 gold 테이블을 검증하고 Data Docs를 생성합니다.
+4. crypto tick producer가 `BTC-USD`, `ETH-USD`, `SOL-USD`, `XRP-USD` 체결 이벤트를 Kafka에 Avro 형태로 적재합니다.
+5. Flink SQL이 Kafka source를 읽어 commerce와 market 데이터를 bronze / silver / gold Iceberg 테이블로 스트리밍 적재합니다.
+6. Trino가 Iceberg 테이블을 SQL로 조회합니다.
+7. Superset은 Trino를 통해 KPI 대시보드를 구성합니다.
+8. Great Expectations는 gold 테이블을 검증하고 Data Docs를 생성합니다.
 
 ## Tech Stack
 
@@ -141,8 +148,8 @@ flowchart LR
 면접 대비용으로는 아래처럼 "대규모 데이터 + 실시간 대시보드" 확장 계획까지 같이 설명하는 것이 좋습니다.
 
 - 대상 데이터셋 후보:
-  - GitHub event dataset
   - crypto tick data
+  - GitHub event dataset
   - stock trade data
 - 목표 볼륨:
   - 약 `100M rows`
@@ -157,6 +164,18 @@ flowchart LR
 확장 버전 아키텍처 설명 예시:
 
 `Kafka -> Flink -> Iceberg -> Trino -> Superset / Grafana`
+
+crypto tick 버전 목표 예시:
+
+- Throughput: `500+ events/sec`
+- End-to-end dashboard latency: `2s ~ 5s`
+- 저장 데이터 규모: `100M rows`
+- 주요 집계:
+  - `tick_count_1m`
+  - `traded_volume_1m`
+  - `traded_notional_1m`
+  - `vwap_1m`
+  - `price_volatility_1m`
 
 ## Reliability And Failure Scenarios
 
@@ -269,7 +288,7 @@ Copy-Item .env.example .env
 - `schema-registry`
   - Avro 스키마를 등록하고 호환성 정책을 관리합니다.
 - `event-producer`
-  - 클릭, 검색, 장바구니 같은 행동 이벤트를 Kafka로 발행하는 데모용 producer입니다.
+  - 클릭, 검색, 장바구니 같은 행동 이벤트와 crypto tick stream을 Kafka로 발행하는 producer입니다.
 - `flink-jobmanager`
   - Flink 잡 스케줄링과 체크포인트 조율을 담당합니다.
 - `flink-taskmanager`
@@ -290,9 +309,10 @@ Copy-Item .env.example .env
 1. `.\scripts\bootstrap.ps1`
 2. `.\scripts\seed-postgres.ps1`
 3. `.\scripts\produce-events.ps1`
-4. Trino에서 [sql/trino/01_demo_queries.sql](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/sql/trino/01_demo_queries.sql) 실행
-5. `.\scripts\run-dq.ps1`
-6. Superset에서 KPI 차트 확인
+4. `.\scripts\produce-crypto-ticks.ps1 -Count 600 -IntervalMs 10`
+5. Trino에서 [sql/trino/01_demo_queries.sql](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/sql/trino/01_demo_queries.sql) 실행
+6. `.\scripts\run-dq.ps1`
+7. Superset에서 commerce KPI와 crypto market KPI 차트 확인
 
 짧은 발표용 흐름은 [docs/demo-script.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/demo-script.md)에 정리했습니다.
 
@@ -316,35 +336,47 @@ Copy-Item .env.example .env
 - 확인:
   - Flink UI에서 `commerce_medallion_pipeline`가 `RUNNING`
   - Kafka Connect에서 `pg-commerce-cdc` 커넥터 상태가 `RUNNING`
+  - `seed-postgres.ps1`는 재실행해도 새 order/payment/refund 세트를 추가하도록 작성되어 있어 commerce KPI를 누적 확인할 때 여러 번 실행해도 됨
 
 ### 3. App Event Test
 
 - `.\scripts\produce-events.ps1 -Count 120 -IntervalMs 250`
+- `.\scripts\produce-crypto-ticks.ps1 -Count 600 -IntervalMs 10`
 - 확인:
   - Schema Registry에 user behavior schema 등록
   - Kafka 토픽 `raw.event.commerce.user_behavior_v3` 사용 확인
 
-### 4. Lakehouse Query Test
+### 4. Crypto Tick Stream Test
+
+- `.\scripts\produce-crypto-ticks.ps1 -Count 600 -IntervalMs 10`
+- 확인:
+  - Kafka 토픽 `raw.event.market.crypto_ticks_v1` 사용 확인
+  - Trino에서 `iceberg.bronze.crypto_ticks` row count 증가
+  - Trino에서 `iceberg.gold.crypto_market_kpis_1m` row 생성 확인
+  - 기본값 `EventTimeStepMs=250` 덕분에 짧은 실행으로도 1분 window KPI를 빠르게 확인할 수 있음
+
+### 5. Lakehouse Query Test
 
 - [sql/trino/01_demo_queries.sql](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/sql/trino/01_demo_queries.sql) 실행
 - 또는 바로 row count 확인:
 
 ```powershell
-docker compose exec -T trino trino --execute "SELECT 'bronze.orders_cdc', COUNT(*) FROM iceberg.bronze.orders_cdc UNION ALL SELECT 'bronze.payments_cdc', COUNT(*) FROM iceberg.bronze.payments_cdc UNION ALL SELECT 'bronze.refunds_cdc', COUNT(*) FROM iceberg.bronze.refunds_cdc UNION ALL SELECT 'silver.order_events', COUNT(*) FROM iceberg.silver.order_events UNION ALL SELECT 'gold.commerce_kpis_1m', COUNT(*) FROM iceberg.gold.commerce_kpis_1m"
+docker compose exec -T trino trino --execute "SELECT 'bronze.orders_cdc', COUNT(*) FROM iceberg.bronze.orders_cdc UNION ALL SELECT 'bronze.payments_cdc', COUNT(*) FROM iceberg.bronze.payments_cdc UNION ALL SELECT 'bronze.refunds_cdc', COUNT(*) FROM iceberg.bronze.refunds_cdc UNION ALL SELECT 'bronze.crypto_ticks', COUNT(*) FROM iceberg.bronze.crypto_ticks UNION ALL SELECT 'silver.order_events', COUNT(*) FROM iceberg.silver.order_events UNION ALL SELECT 'silver.crypto_ticks_1s', COUNT(*) FROM iceberg.silver.crypto_ticks_1s UNION ALL SELECT 'gold.commerce_kpis_1m', COUNT(*) FROM iceberg.gold.commerce_kpis_1m UNION ALL SELECT 'gold.crypto_market_kpis_1m', COUNT(*) FROM iceberg.gold.crypto_market_kpis_1m"
 ```
 
 기대 결과:
 
 - bronze / silver / gold 테이블 row count가 0보다 큼
 - `gold.commerce_kpis_1m`에서 `orders_created`, `gross_order_value`, `payments_succeeded`, `refund_amount` 확인 가능
+- `gold.crypto_market_kpis_1m`에서 `tick_count_1m`, `traded_volume_1m`, `traded_notional_1m`, `vwap_1m`, `price_volatility_1m` 확인 가능
 
-### 5. Data Quality Test
+### 6. Data Quality Test
 
 - `.\scripts\run-dq.ps1`
 - 확인:
   - [quality/great_expectations/uncommitted/data_docs/local_site/index.html](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/quality/great_expectations/uncommitted/data_docs/local_site/index.html) 생성
 
-### 6. Troubleshooting Quick Checks
+### 7. Troubleshooting Quick Checks
 
 - Flink 로그:
   - `docker compose logs flink-jobmanager --tail=200`
@@ -361,13 +393,15 @@ docker compose exec -T trino trino --execute "SELECT 'bronze.orders_cdc', COUNT(
 - `raw.cdc.commerce.public.payments`
 - `raw.cdc.commerce.public.refunds`
 - `raw.event.commerce.user_behavior_v3`
+- `raw.event.market.crypto_ticks_v1`
 
 핵심 설계 선택:
 
 - CDC는 Debezium unwrap JSON으로 단순화해 Flink SQL 소비를 쉽게 했습니다.
 - 앱 이벤트는 Avro + Schema Registry로 타입 안전성과 진화를 확보했습니다.
+- market tick stream은 대용량 / 고빈도 스트리밍 예제를 설명하기 좋도록 Avro + event-time 기반으로 추가했습니다.
 - 저장 계층은 Iceberg 단일 포맷으로 통일해 배치와 스트리밍을 같은 테이블로 수렴시켰습니다.
-- silver는 정규화된 이벤트 뷰, gold는 1분 KPI 집계 테이블로 구성했습니다.
+- silver는 정규화/마이크로배치 집계 계층, gold는 1분 KPI 집계 테이블로 구성했습니다.
 - 스키마 호환성은 `BACKWARD_TRANSITIVE` 기준으로 설명 가능하도록 설계했습니다.
 
 ## Submission Checklist

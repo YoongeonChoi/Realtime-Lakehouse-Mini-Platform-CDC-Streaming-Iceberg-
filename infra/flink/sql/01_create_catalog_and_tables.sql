@@ -101,6 +101,24 @@ WITH (
   'write.distribution-mode' = 'hash'
 );
 
+CREATE TABLE IF NOT EXISTS bronze.crypto_ticks (
+  tick_id STRING,
+  symbol STRING,
+  exchange STRING,
+  price DOUBLE,
+  volume DOUBLE,
+  side STRING,
+  trade_id STRING,
+  trade_notional DOUBLE,
+  ingest_source STRING,
+  event_time TIMESTAMP(3),
+  ingest_time TIMESTAMP(3)
+)
+WITH (
+  'format-version' = '2',
+  'write.distribution-mode' = 'hash'
+);
+
 CREATE TABLE IF NOT EXISTS silver.order_events (
   event_id STRING,
   user_id BIGINT,
@@ -110,6 +128,26 @@ CREATE TABLE IF NOT EXISTS silver.order_events (
   event_time TIMESTAMP(3),
   source_system STRING,
   ingest_time TIMESTAMP(3)
+)
+WITH (
+  'format-version' = '2'
+);
+
+CREATE TABLE IF NOT EXISTS silver.crypto_ticks_1s (
+  window_start TIMESTAMP(3),
+  window_end TIMESTAMP(3),
+  symbol STRING,
+  exchange STRING,
+  tick_count BIGINT,
+  min_price DOUBLE,
+  max_price DOUBLE,
+  avg_price DOUBLE,
+  traded_volume DOUBLE,
+  traded_notional DOUBLE,
+  vwap DOUBLE,
+  buy_tick_count BIGINT,
+  sell_tick_count BIGINT,
+  produced_at TIMESTAMP(3)
 )
 WITH (
   'format-version' = '2'
@@ -130,6 +168,18 @@ CREATE TABLE IF NOT EXISTS silver.user_behavior (
   source STRING,
   event_time TIMESTAMP(3),
   ingest_time TIMESTAMP(3)
+)
+WITH (
+  'format-version' = '2'
+);
+
+CREATE TABLE IF NOT EXISTS gold.crypto_market_kpis_1m (
+  window_start TIMESTAMP(3),
+  window_end TIMESTAMP(3),
+  symbol STRING,
+  metric_name STRING,
+  metric_value DOUBLE,
+  produced_at TIMESTAMP(3)
 )
 WITH (
   'format-version' = '2'
@@ -260,6 +310,29 @@ CREATE TEMPORARY TABLE behavior_events_source (
   'avro-confluent.url' = 'http://schema-registry:8081'
 );
 
+CREATE TEMPORARY TABLE crypto_ticks_source (
+  tick_id STRING NOT NULL,
+  symbol STRING NOT NULL,
+  exchange STRING NOT NULL,
+  price DOUBLE NOT NULL,
+  volume DOUBLE NOT NULL,
+  side STRING NOT NULL,
+  trade_id STRING NOT NULL,
+  ingest_source STRING NOT NULL,
+  event_time BIGINT NOT NULL,
+  event_ts AS TO_TIMESTAMP_LTZ(event_time, 3),
+  trade_notional AS price * volume,
+  WATERMARK FOR event_ts AS event_ts - INTERVAL '5' SECOND
+) WITH (
+  'connector' = 'kafka',
+  'topic' = 'raw.event.market.crypto_ticks_v1',
+  'properties.bootstrap.servers' = 'kafka:9092',
+  'properties.group.id' = 'flink-crypto-ticks',
+  'scan.startup.mode' = 'earliest-offset',
+  'format' = 'avro-confluent',
+  'avro-confluent.url' = 'http://schema-registry:8081'
+);
+
 EXECUTE STATEMENT SET
 BEGIN
 INSERT INTO bronze.orders_cdc
@@ -273,6 +346,21 @@ FROM payments_cdc_source;
 INSERT INTO bronze.refunds_cdc
 SELECT refund_id, order_id, payment_id, user_id, refund_status, refund_reason, refund_amount, CAST(refunded_at AS TIMESTAMP(3)), CAST(updated_at AS TIMESTAMP(3)), __op, CAST(TO_TIMESTAMP_LTZ(__source_ts_ms, 3) AS TIMESTAMP(3)), CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3))
 FROM refunds_cdc_source;
+
+INSERT INTO bronze.crypto_ticks
+SELECT
+  tick_id,
+  symbol,
+  exchange,
+  price,
+  volume,
+  side,
+  trade_id,
+  trade_notional,
+  ingest_source,
+  CAST(event_ts AS TIMESTAMP(3)),
+  CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3))
+FROM crypto_ticks_source;
 
 INSERT INTO silver.order_events
 SELECT event_id, user_id, entity_type, event_status, amount, event_time, source_system, ingest_time
@@ -315,17 +403,41 @@ FROM (
   FROM refunds_cdc_source
 );
 
+INSERT INTO silver.crypto_ticks_1s
+SELECT
+  window_start,
+  window_end,
+  symbol,
+  exchange,
+  COUNT(*) AS tick_count,
+  MIN(price) AS min_price,
+  MAX(price) AS max_price,
+  AVG(price) AS avg_price,
+  SUM(volume) AS traded_volume,
+  SUM(trade_notional) AS traded_notional,
+  CASE
+    WHEN SUM(volume) = 0 THEN 0.0
+    ELSE SUM(trade_notional) / SUM(volume)
+  END AS vwap,
+  SUM(CASE WHEN side = 'BUY' THEN 1 ELSE 0 END) AS buy_tick_count,
+  SUM(CASE WHEN side = 'SELL' THEN 1 ELSE 0 END) AS sell_tick_count,
+  CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3)) AS produced_at
+FROM TABLE(TUMBLE(TABLE crypto_ticks_source, DESCRIPTOR(event_ts), INTERVAL '1' SECOND))
+GROUP BY window_start, window_end, symbol, exchange;
+
 INSERT INTO gold.commerce_kpis_1m
 SELECT window_start, window_end, metric_name, metric_value, CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3))
 FROM (
   SELECT window_start, window_end, 'orders_created' AS metric_name, CAST(COUNT(*) AS DOUBLE) AS metric_value
   FROM TABLE(TUMBLE(TABLE orders_cdc_source, DESCRIPTOR(event_time), INTERVAL '1' MINUTE))
+  WHERE __op = 'c'
   GROUP BY window_start, window_end
 
   UNION ALL
 
   SELECT window_start, window_end, 'gross_order_value' AS metric_name, CAST(COALESCE(SUM(total_amount), 0) AS DOUBLE) AS metric_value
   FROM TABLE(TUMBLE(TABLE orders_cdc_source, DESCRIPTOR(event_time), INTERVAL '1' MINUTE))
+  WHERE __op = 'c'
   GROUP BY window_start, window_end
 
   UNION ALL
@@ -340,6 +452,68 @@ FROM (
   SELECT window_start, window_end, 'refund_amount' AS metric_name, CAST(COALESCE(SUM(refund_amount), 0) AS DOUBLE) AS metric_value
   FROM TABLE(TUMBLE(TABLE refunds_cdc_source, DESCRIPTOR(event_time), INTERVAL '1' MINUTE))
   GROUP BY window_start, window_end
+);
+
+INSERT INTO gold.crypto_market_kpis_1m
+SELECT window_start, window_end, symbol, metric_name, metric_value, CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3))
+FROM (
+  SELECT
+    window_start,
+    window_end,
+    symbol,
+    'tick_count_1m' AS metric_name,
+    CAST(COUNT(*) AS DOUBLE) AS metric_value
+  FROM TABLE(TUMBLE(TABLE crypto_ticks_source, DESCRIPTOR(event_ts), INTERVAL '1' MINUTE))
+  GROUP BY window_start, window_end, symbol
+
+  UNION ALL
+
+  SELECT
+    window_start,
+    window_end,
+    symbol,
+    'traded_volume_1m' AS metric_name,
+    CAST(COALESCE(SUM(volume), 0) AS DOUBLE) AS metric_value
+  FROM TABLE(TUMBLE(TABLE crypto_ticks_source, DESCRIPTOR(event_ts), INTERVAL '1' MINUTE))
+  GROUP BY window_start, window_end, symbol
+
+  UNION ALL
+
+  SELECT
+    window_start,
+    window_end,
+    symbol,
+    'traded_notional_1m' AS metric_name,
+    CAST(COALESCE(SUM(trade_notional), 0) AS DOUBLE) AS metric_value
+  FROM TABLE(TUMBLE(TABLE crypto_ticks_source, DESCRIPTOR(event_ts), INTERVAL '1' MINUTE))
+  GROUP BY window_start, window_end, symbol
+
+  UNION ALL
+
+  SELECT
+    window_start,
+    window_end,
+    symbol,
+    'vwap_1m' AS metric_name,
+    CAST(
+      CASE
+        WHEN SUM(volume) = 0 THEN 0.0
+        ELSE SUM(trade_notional) / SUM(volume)
+      END AS DOUBLE
+    ) AS metric_value
+  FROM TABLE(TUMBLE(TABLE crypto_ticks_source, DESCRIPTOR(event_ts), INTERVAL '1' MINUTE))
+  GROUP BY window_start, window_end, symbol
+
+  UNION ALL
+
+  SELECT
+    window_start,
+    window_end,
+    symbol,
+    'price_volatility_1m' AS metric_name,
+    CAST(MAX(price) - MIN(price) AS DOUBLE) AS metric_value
+  FROM TABLE(TUMBLE(TABLE crypto_ticks_source, DESCRIPTOR(event_ts), INTERVAL '1' MINUTE))
+  GROUP BY window_start, window_end, symbol
 );
 
 END;

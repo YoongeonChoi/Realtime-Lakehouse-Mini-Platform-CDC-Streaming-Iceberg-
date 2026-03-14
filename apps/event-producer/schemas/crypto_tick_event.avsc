@@ -1,0 +1,16 @@
+{
+  "type": "record",
+  "name": "CryptoTickEvent",
+  "namespace": "demo.market",
+  "fields": [
+    { "name": "tick_id", "type": "string" },
+    { "name": "symbol", "type": "string" },
+    { "name": "exchange", "type": "string" },
+    { "name": "price", "type": "double" },
+    { "name": "volume", "type": "double" },
+    { "name": "side", "type": "string" },
+    { "name": "trade_id", "type": "string" },
+    { "name": "ingest_source", "type": "string" },
+    { "name": "event_time", "type": "long" }
+  ]
+}

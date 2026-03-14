@@ -8,4 +8,4 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-docker compose run --rm event-producer --count $Count --interval-ms $IntervalMs
+docker compose run --rm event-producer --mode user_behavior --count $Count --interval-ms $IntervalMs

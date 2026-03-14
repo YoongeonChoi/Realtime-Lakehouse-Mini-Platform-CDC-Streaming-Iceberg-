@@ -6,11 +6,13 @@
 - `raw.cdc.commerce.public.payments`
 - `raw.cdc.commerce.public.refunds`
 - `raw.event.commerce.user_behavior_v3`
+- `raw.event.market.crypto_ticks_v1`
 
 ## Keying Strategy
 
 - CDC 키: 테이블 PK 기반
 - 앱 이벤트 키: `user_id`
+- crypto tick 키: `symbol`
 
 ## Partitioning
 
@@ -21,8 +23,29 @@
 
 - CDC: Debezium unwrap JSON
 - App events: Avro + Schema Registry
+- Crypto ticks: Avro + Schema Registry
 - 글로벌 호환성: `BACKWARD_TRANSITIVE`
 
 ## Evolution Scenario
 
 대표 예시는 `orders.coupon_id` nullable 필드 추가입니다.
+
+## Crypto Tick Schema
+
+핵심 필드:
+
+- `tick_id`
+- `symbol`
+- `exchange`
+- `price`
+- `volume`
+- `side`
+- `trade_id`
+- `ingest_source`
+- `event_time`
+
+주요 downstream 테이블:
+
+- `bronze.crypto_ticks`
+- `silver.crypto_ticks_1s`
+- `gold.crypto_market_kpis_1m`

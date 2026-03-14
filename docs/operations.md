@@ -5,7 +5,12 @@
 1. `.\scripts\bootstrap.ps1`
 2. `.\scripts\seed-postgres.ps1`
 3. `.\scripts\produce-events.ps1`
-4. `.\scripts\run-dq.ps1`
+4. `.\scripts\produce-crypto-ticks.ps1`
+5. `.\scripts\run-dq.ps1`
+
+참고:
+
+- `produce-crypto-ticks.ps1`는 기본적으로 `EventTimeStepMs=250`을 사용해 짧은 실행으로도 `gold.crypto_market_kpis_1m` 적재를 확인할 수 있습니다.
 
 ## Recovery Patterns
 

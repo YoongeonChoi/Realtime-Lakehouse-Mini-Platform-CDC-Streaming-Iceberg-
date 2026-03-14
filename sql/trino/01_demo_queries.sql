@@ -5,6 +5,21 @@ SHOW TABLES FROM iceberg.silver;
 SHOW TABLES FROM iceberg.gold;
 
 SELECT *
+FROM iceberg.bronze.crypto_ticks
+ORDER BY event_time DESC
+LIMIT 20;
+
+SELECT *
+FROM iceberg.silver.crypto_ticks_1s
+ORDER BY window_start DESC, symbol
+LIMIT 20;
+
+SELECT *
+FROM iceberg.gold.crypto_market_kpis_1m
+ORDER BY window_start DESC, symbol, metric_name
+LIMIT 50;
+
+SELECT *
 FROM iceberg.bronze.orders_cdc
 ORDER BY cdc_source_ts DESC
 LIMIT 20;
