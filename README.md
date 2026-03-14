@@ -95,6 +95,116 @@ flowchart LR
 7. Superset은 Trino를 통해 KPI 대시보드를 구성합니다.
 8. Great Expectations는 gold 테이블을 검증하고 Data Docs를 생성합니다.
 
+## Hiring-Focused Execution Steps
+
+취업용 포트폴리오로 보여줄 때는 "동작한다"보다 "어떤 흐름과 운영 포인트를 설명할 수 있느냐"가 중요합니다. 아래 4가지는 README만 봐도 바로 설명할 수 있게 남겨둔 최소 강화 포인트입니다.
+
+### 1. Clear Crypto Tick Flow
+
+```text
+Crypto Exchange WebSocket
+        ↓
+Kafka Topic (trades)
+        ↓
+Flink Streaming Job
+- 1m window aggregation
+        ↓
+Iceberg Table (MinIO)
+        ↓
+Superset
+```
+
+이 프로젝트에서는 실제 거래소 WebSocket 대신 `scripts/produce-crypto-ticks.ps1`가 exchange feed를 시뮬레이션합니다. 면접에서는 아래처럼 설명하면 자연스럽습니다.
+
+- simulated exchange feed가 `raw.event.market.crypto_ticks_v1`로 tick을 발행
+- Flink가 1초 silver 집계와 1분 gold KPI를 계산
+- Iceberg 테이블이 MinIO에 저장되고 Trino / Superset이 이를 조회
+
+### 2. Add Measurable KPIs
+
+README에 남길 값은 "실제 실행해서 다시 설명할 수 있는 수치"만 적는 편이 좋습니다.
+
+- Throughput:
+  - `~460 events/sec`
+  - 측정값: `1000`개 crypto tick 발행, topic offset 증가량 `1000`, 총 실행 시간 `2.173s`
+- Latency:
+  - Flink checkpoint duration `24ms ~ 84ms`
+  - 참고: 이 프로젝트의 dashboard freshness는 엔진 처리 시간보다 `1-minute tumbling window` 종료 시점에 더 크게 영향을 받음
+
+측정 방법:
+
+- Kafka publish throughput:
+  - `docker exec rlmp-kafka kafka-get-offsets --bootstrap-server localhost:9092 --topic raw.event.market.crypto_ticks_v1`
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\produce-crypto-ticks.ps1 -Count 1000 -IntervalMs 0 -EventTimeStepMs 0`
+  - 실행 전후 topic offset delta와 총 실행 시간을 비교
+- Flink latency:
+  - `docker compose logs flink-jobmanager --tail=200`
+  - checkpoint duration 관찰
+- Dashboard freshness:
+  - `produced_at` vs `window_start` 또는 `window_end` 비교
+  - 이 프로젝트는 event-time window를 사용하므로 "실제 wall-clock latency"와 "window-close latency"를 구분해서 설명하는 것이 중요
+
+### 3. Failure Scenario Drills
+
+면접에서 거의 반드시 나오는 질문이어서, README에 바로 답할 수 있는 형태로 남겨둡니다.
+
+- Test 1: Kafka broker restart
+  - 방법:
+    - `docker restart rlmp-kafka`
+    - `docker compose logs flink-jobmanager --tail=200`
+  - 기대 결과:
+    - source가 잠시 대기하거나 lag가 증가
+    - broker 복구 후 Flink source / Kafka Connect가 다시 연결
+  - 설명 포인트:
+    - ingestion 경로가 끊겨도 저장된 checkpoint와 consumer offset을 기준으로 재연결 가능
+- Test 2: Schema change
+  - 방법:
+    - nullable 필드 추가 예시: `coupon_id` 또는 새로운 optional metadata field
+    - Schema Registry compatibility 유지
+  - 기대 결과:
+    - `BACKWARD_TRANSITIVE` 정책 하에서 producer / consumer 무중단 진화 가능
+    - Iceberg add-column 패턴으로 downstream 테이블도 안전하게 확장 가능
+  - 설명 포인트:
+    - breaking change는 새 topic 또는 새 downstream table로 분리
+- Test 3: Iceberg sink failure
+  - 실제 관찰:
+    - `CommitStateUnknownException` / REST catalog `500` 상황에서 Flink job이 `RESTARTING`으로 전환되고 task restart를 시도함
+  - 설명 포인트:
+    - exactly-once는 sink commit 성공이 전제이며, catalog / object storage 안정성도 함께 봐야 함
+    - 운영에서는 commit retry, compaction schedule, 단일 sink fan-in 설계가 중요
+
+### 4. Data Scale Test
+
+stress generator로 손쉽게 데이터 규모를 키울 수 있습니다.
+
+- 1M trades:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\produce-crypto-ticks.ps1 -Count 1000000 -IntervalMs 0 -EventTimeStepMs 0
+```
+
+- 5M trades:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\produce-crypto-ticks.ps1 -Count 5000000 -IntervalMs 0 -EventTimeStepMs 0
+```
+
+목표:
+
+- stable pipeline
+- no data loss
+- Kafka lag 증가 추이 확인
+- Flink restart / checkpoint durability 확인
+- Iceberg compaction 필요 시점 파악
+
+권장 측정 항목:
+
+- topic offset delta
+- Flink checkpoint duration
+- container CPU / memory
+- Trino query latency
+- gold row 증가 여부
+
 ## Tech Stack
 
 - Source OLTP: PostgreSQL 16
@@ -128,6 +238,8 @@ flowchart LR
 
 아래 수치는 현재 로컬 환경에서 기능 검증과 안정성 확인 용도로 관찰한 값입니다.
 
+- Kafka publish throughput: 약 `460 events/sec`
+  - 측정 조건: `1000` crypto tick, `IntervalMs=0`, topic offset delta `1000`, 실행 시간 `2.173s`
 - Flink checkpoint duration: 약 `24 ms ~ 84 ms`
 - 검증 시점 적재 결과:
   - `bronze.orders_cdc = 35`
@@ -141,7 +253,7 @@ flowchart LR
   - `payments_succeeded = 2`
   - `refund_amount = 89.9`
 
-이 수치는 대규모 부하 테스트 결과가 아니라, end-to-end 파이프라인과 checkpoint 안정성 확인용 smoke benchmark입니다.
+이 수치는 대규모 부하 테스트 결과가 아니라, end-to-end 파이프라인과 checkpoint 안정성 확인용 smoke benchmark입니다. dashboard freshness는 `1-minute tumbling window` 종료 시점에 영향을 크게 받기 때문에, 면접에서는 "엔진 처리 지연"과 "윈도우 기반 결과 반영 지연"을 분리해서 설명하는 편이 좋습니다.
 
 ### Scale-Up Benchmark Plan
 
@@ -168,7 +280,9 @@ flowchart LR
 crypto tick 버전 목표 예시:
 
 - Throughput: `500+ events/sec`
-- End-to-end dashboard latency: `2s ~ 5s`
+- End-to-end dashboard freshness:
+  - `window_end -> produced_at` 지표로 관리
+  - 목표는 "window closure 후 low single-digit seconds"
 - 저장 데이터 규모: `100M rows`
 - 주요 집계:
   - `tick_count_1m`
@@ -210,6 +324,7 @@ crypto tick 버전 목표 예시:
 - 대응:
   - Kafka 복구 후 consumer lag 회복 여부 확인
   - Flink job과 connector 상태 점검
+  - 필요 시 `docker compose logs flink-jobmanager --tail=200`로 source reconnect 흐름 확인
 
 ### Failure Scenario: Flink Restart
 
@@ -219,6 +334,8 @@ crypto tick 버전 목표 예시:
   - Flink UI와 jobmanager 로그 확인
   - checkpoint 복구 여부 확인
   - `.\scripts\run-flink-sql.ps1`로 재배포
+  - 실제 운영 설명 포인트:
+    - sink commit이 실패하면 job이 `RESTARTING`으로 전환되고 task restart를 시도함
 
 ### Failure Scenario: Schema Change
 
@@ -228,6 +345,10 @@ crypto tick 버전 목표 예시:
 - 대응:
   - backward-compatible change인지 확인
   - breaking change면 새 topic 또는 새 downstream table로 분리
+  - 추천 drill:
+    - optional 필드 추가
+    - Schema Registry 등록 성공 확인
+    - Iceberg add-column 반영 여부 확인
 
 ## Quick Start
 
