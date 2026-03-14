@@ -239,6 +239,105 @@ Copy-Item .env.example .env
 .\scripts\run-dq.ps1
 ```
 
+## CMD Quick Start
+
+Windows `cmd`에서 실행할 때는 아래 순서를 그대로 따라 하면 됩니다.
+
+### 1. `cmd` 열기
+
+- `Windows Terminal`
+- `명령 프롬프트`
+- `VS Code Terminal`에서 shell을 `Command Prompt`로 바꾼 경우
+
+### 2. 프로젝트 폴더로 이동
+
+```cmd
+cd /d C:\clone_repo\Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-
+```
+
+이미 프롬프트가 아래처럼 보이면 이동이 끝난 상태입니다.
+
+```cmd
+C:\clone_repo\Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg->
+```
+
+### 3. `.env` 만들고 스택 올리기
+
+```cmd
+copy .env.example .env
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
+```
+
+정상이라면 아래 주소들이 열립니다.
+
+- Kafka Connect: [http://localhost:8083](http://localhost:8083)
+- Flink UI: [http://localhost:8082](http://localhost:8082)
+- Superset: [http://localhost:8088](http://localhost:8088)
+- MinIO: [http://localhost:9001](http://localhost:9001)
+
+참고:
+
+- `http://localhost:8083`는 웹 페이지가 아니라 Kafka Connect REST API라서 JSON이 보이면 정상입니다.
+
+### 4. CDC 데이터 넣기
+
+```cmd
+powershell -ExecutionPolicy Bypass -File .\scripts\seed-postgres.ps1
+```
+
+정상이라면 `orders`, `payments`, `refunds` 결과가 출력됩니다.
+
+### 5. 앱 이벤트 넣기
+
+```cmd
+powershell -ExecutionPolicy Bypass -File .\scripts\produce-events.ps1 -Count 120 -IntervalMs 250
+```
+
+### 6. Crypto Tick 이벤트 넣기
+
+```cmd
+powershell -ExecutionPolicy Bypass -File .\scripts\produce-crypto-ticks.ps1 -Count 600 -IntervalMs 10
+```
+
+이 스크립트는 기본적으로 `EventTimeStepMs=250`을 사용하므로 몇 초만 실행해도 1분 window KPI가 생성됩니다.
+
+### 7. 최종 적재 확인
+
+```cmd
+docker compose exec -T trino trino --execute "SELECT 'bronze.orders_cdc', COUNT(*) FROM iceberg.bronze.orders_cdc UNION ALL SELECT 'bronze.payments_cdc', COUNT(*) FROM iceberg.bronze.payments_cdc UNION ALL SELECT 'bronze.refunds_cdc', COUNT(*) FROM iceberg.bronze.refunds_cdc UNION ALL SELECT 'bronze.crypto_ticks', COUNT(*) FROM iceberg.bronze.crypto_ticks UNION ALL SELECT 'silver.order_events', COUNT(*) FROM iceberg.silver.order_events UNION ALL SELECT 'silver.crypto_ticks_1s', COUNT(*) FROM iceberg.silver.crypto_ticks_1s UNION ALL SELECT 'gold.commerce_kpis_1m', COUNT(*) FROM iceberg.gold.commerce_kpis_1m UNION ALL SELECT 'gold.crypto_market_kpis_1m', COUNT(*) FROM iceberg.gold.crypto_market_kpis_1m"
+```
+
+정상이라면 `bronze`, `silver`, `gold` count가 모두 `0`보다 크게 나옵니다.
+
+### 8. DQ 실행
+
+```cmd
+powershell -ExecutionPolicy Bypass -File .\scripts\run-dq.ps1
+```
+
+정상이라면 `success=True`가 출력되고 Data Docs가 생성됩니다.
+
+### 9. 자주 보는 화면
+
+- Flink 상태 확인: [http://localhost:8082](http://localhost:8082)
+- Superset 로그인: [http://localhost:8088](http://localhost:8088)
+  - `admin / admin`
+- MinIO 로그인: [http://localhost:9001](http://localhost:9001)
+  - `minio / minio12345`
+- DQ 결과 파일: [quality/great_expectations/uncommitted/data_docs/local_site/index.html](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/quality/great_expectations/uncommitted/data_docs/local_site/index.html)
+
+### 10. 스택 끄기
+
+```cmd
+docker compose down
+```
+
+볼륨까지 지우고 완전히 초기화하려면:
+
+```cmd
+docker compose down -v
+```
+
 주요 접속 포인트:
 
 - Kafka Connect: [http://localhost:8083](http://localhost:8083)
