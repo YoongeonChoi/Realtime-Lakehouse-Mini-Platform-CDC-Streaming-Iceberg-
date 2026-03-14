@@ -78,7 +78,17 @@ flowchart LR
 - [docs/demo-script.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/demo-script.md)
 - [docs/portfolio-playbook.md](C:/clone_repo/Realtime-Lakehouse-Mini-Platform-CDC-Streaming-Iceberg-/docs/portfolio-playbook.md)
 
-## Stack
+## Data Flow
+
+1. PostgreSQL `orders / payments / refunds` 변경이 WAL에 기록됩니다.
+2. Debezium PostgreSQL Connector가 변경 로그를 읽어 Kafka CDC 토픽으로 발행합니다.
+3. 앱 이벤트 producer가 클릭/검색/장바구니 이벤트를 Kafka에 Avro 형태로 적재합니다.
+4. Flink SQL이 Kafka source를 읽어 bronze / silver / gold Iceberg 테이블로 스트리밍 적재합니다.
+5. Trino가 Iceberg 테이블을 SQL로 조회합니다.
+6. Superset은 Trino를 통해 KPI 대시보드를 구성합니다.
+7. Great Expectations는 gold 테이블을 검증하고 Data Docs를 생성합니다.
+
+## Tech Stack
 
 - Source OLTP: PostgreSQL 16
 - CDC: Debezium PostgreSQL Connector + Kafka Connect
@@ -90,6 +100,115 @@ flowchart LR
 - Query Engine: Trino
 - Dashboard: Apache Superset
 - Data Quality: Great Expectations
+
+## Why CDC
+
+- 운영 DB를 직접 polling 하지 않고 변경분만 가져와 source 시스템 부하를 줄일 수 있습니다.
+- 주문, 결제, 환불처럼 상태가 계속 바뀌는 도메인을 이벤트 스트림으로 전환하기 좋습니다.
+- "초기 적재 + 지속 변경 반영" 구조를 한 번에 설명할 수 있어 면접 포인트가 명확합니다.
+- Debezium을 쓰면 애플리케이션 코드 수정 없이 Postgres WAL 기반 CDC를 시연할 수 있습니다.
+
+## Why Iceberg
+
+- bronze / silver / gold를 같은 테이블 포맷 위에서 운영할 수 있습니다.
+- snapshot과 metadata 기반이라 time travel, rollback, compaction 같은 lakehouse 개념을 설명하기 좋습니다.
+- schema evolution과 partition evolution을 지원해 데이터 플랫폼 포맷으로 설득력이 높습니다.
+- 로컬 MinIO와 클라우드 S3 모두에 같은 저장 계층 패턴을 유지할 수 있습니다.
+
+## Benchmark
+
+### Local Smoke Benchmark
+
+아래 수치는 현재 로컬 환경에서 기능 검증과 안정성 확인 용도로 관찰한 값입니다.
+
+- Flink checkpoint duration: 약 `24 ms ~ 84 ms`
+- 검증 시점 적재 결과:
+  - `bronze.orders_cdc = 35`
+  - `bronze.payments_cdc = 18`
+  - `bronze.refunds_cdc = 9`
+  - `silver.order_events = 62`
+  - `gold.commerce_kpis_1m = 32`
+- 예시 KPI:
+  - `orders_created = 4`
+  - `gross_order_value = 669.8`
+  - `payments_succeeded = 2`
+  - `refund_amount = 89.9`
+
+이 수치는 대규모 부하 테스트 결과가 아니라, end-to-end 파이프라인과 checkpoint 안정성 확인용 smoke benchmark입니다.
+
+### Scale-Up Benchmark Plan
+
+면접 대비용으로는 아래처럼 "대규모 데이터 + 실시간 대시보드" 확장 계획까지 같이 설명하는 것이 좋습니다.
+
+- 대상 데이터셋 후보:
+  - GitHub event dataset
+  - crypto tick data
+  - stock trade data
+- 목표 볼륨:
+  - 약 `100M rows`
+- 측정 지표:
+  - CDC latency
+  - end-to-end dashboard freshness
+  - throughput (`events/sec`)
+  - Kafka lag
+  - Flink checkpoint time
+  - Trino query latency
+
+확장 버전 아키텍처 설명 예시:
+
+`Kafka -> Flink -> Iceberg -> Trino -> Superset / Grafana`
+
+## Reliability And Failure Scenarios
+
+면접에서 거의 반드시 나오는 운영/장애 질문에 대비해 아래 시나리오를 설명할 수 있습니다.
+
+### Exactly Once
+
+- Flink checkpoint와 Iceberg sink를 함께 사용해 재시작 시 중복 적재를 최소화하도록 구성했습니다.
+- 동일 Iceberg 테이블에 대한 복수 sink 경합은 단일 sink fan-in으로 정리했습니다.
+
+### Schema Evolution
+
+- App event는 Schema Registry 호환성 정책을 사용합니다.
+- Iceberg는 nullable add-column 중심으로 안전하게 진화시킵니다.
+- 예시 시나리오: `orders.coupon_id` 필드 추가
+
+### Late Event
+
+- event time과 watermark를 분리해 1분 KPI 집계를 수행합니다.
+- 로컬 단일 partition 환경에서 idle source가 watermark를 막는 문제는 `table.exec.source.idle-timeout`으로 해결했습니다.
+
+### Backfill
+
+- Kafka 토픽 replay와 Iceberg 재적재 구조를 이용해 backfill 시나리오를 설명할 수 있습니다.
+- 로컬 환경에서는 warehouse 초기화 후 토픽을 다시 읽게 하여 재처리 흐름을 검증했습니다.
+
+### Failure Scenario: Kafka Down
+
+- 증상:
+  - Kafka Connect / Flink source 지연
+  - Kafka consumer lag 증가
+- 대응:
+  - Kafka 복구 후 consumer lag 회복 여부 확인
+  - Flink job과 connector 상태 점검
+
+### Failure Scenario: Flink Restart
+
+- 증상:
+  - job failure 또는 container restart
+- 대응:
+  - Flink UI와 jobmanager 로그 확인
+  - checkpoint 복구 여부 확인
+  - `.\scripts\run-flink-sql.ps1`로 재배포
+
+### Failure Scenario: Schema Change
+
+- 증상:
+  - producer / consumer schema 불일치
+  - parse error 또는 sink schema mismatch
+- 대응:
+  - backward-compatible change인지 확인
+  - breaking change면 새 topic 또는 새 downstream table로 분리
 
 ## Quick Start
 
